@@ -214,7 +214,34 @@ if df_keuangan is not None:
     with tab3:
         st.header("🌍 Peta & Demografi Pengiriman")
         
-        df_pengiriman = df_merged_filtered[df_merged_filtered['Jenis Transaksi'] == 'Pengiriman Air'].dropna(subset=['Latitude', 'Longitude'])
+        # DEBUG INFO - Informasi untuk troubleshooting
+        with st.expander("🔍 Debug Info - Klik untuk melihat detail data"):
+            st.write("**1. Jenis Transaksi yang tersedia:**")
+            jenis_transaksi_unique = df_merged_filtered['Jenis Transaksi'].value_counts()
+            st.write(jenis_transaksi_unique)
+            
+            st.write("**2. Total data setelah filter:**")
+            st.write(f"Total baris df_merged_filtered: {len(df_merged_filtered)}")
+            
+            st.write("**3. Data yang memiliki koordinat:**")
+            data_dengan_koordinat = df_merged_filtered.dropna(subset=['Latitude', 'Longitude'])
+            st.write(f"Data dengan Latitude/Longitude: {len(data_dengan_koordinat)}")
+            
+            st.write("**4. Data pengiriman air:**")
+            data_pengiriman_all = df_merged_filtered[df_merged_filtered['Jenis Transaksi'].str.contains('Air|air|Pengiriman|pengiriman', na=False)]
+            st.write(f"Data yang mengandung kata 'Air' atau 'Pengiriman': {len(data_pengiriman_all)}")
+            
+            if len(data_pengiriman_all) > 0:
+                st.write("**Sample data pengiriman:**")
+                st.dataframe(data_pengiriman_all[['Jenis Transaksi', 'Order', 'Latitude', 'Longitude']].head())
+        
+        # Coba dengan filter yang lebih fleksibel
+        df_pengiriman = df_merged_filtered[df_merged_filtered['Jenis Transaksi'].str.contains('Air|air|Pengiriman|pengiriman', na=False)].dropna(subset=['Latitude', 'Longitude'])
+        
+        if len(df_pengiriman) == 0:
+            # Jika masih tidak ada, coba tanpa filter jenis transaksi
+            df_pengiriman = df_merged_filtered.dropna(subset=['Latitude', 'Longitude'])
+            st.info("⚠️ Tidak ada data dengan jenis transaksi 'Air/Pengiriman', menampilkan semua data dengan koordinat valid")
         
         if len(df_pengiriman) > 0:
             col1, col2 = st.columns([1, 2])
