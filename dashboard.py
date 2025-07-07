@@ -32,16 +32,37 @@ def load_data():
     # Mengubah 'Tanggal' menjadi datetime
     df_keuangan['Tanggal'] = pd.to_datetime(df_keuangan['Tanggal'], errors='coerce')
 
-    # Mengisi missing values
+    # Mengisi missing values numerik
     numeric_cols = ['Pemasukan', 'Pengeluaran', 'Volume (L)', 'Jumlah']
     for col in numeric_cols:
         if col in df_keuangan.columns:
             df_keuangan[col] = pd.to_numeric(df_keuangan[col], errors='coerce').fillna(0)
 
+    # Mengisi missing values kategorikal dengan kombinasi mirip atau modus
     categorical_cols = ['Jenis Transaksi', 'Plat Nomor', 'Sopir', 'Order']
     for col in categorical_cols:
         if col in df_keuangan.columns:
-            df_keuangan[col] = df_keuangan[col].fillna('Tidak Diketahui')
+            mask_na = df_keuangan[col].isna() | (df_keuangan[col] == 'Tidak Diketahui') | (df_keuangan[col] == '') | (df_keuangan[col].str.lower() == 'unknown')
+            for idx in df_keuangan[mask_na].index:
+                # Coba cari baris lain yang mirip (selain kolom yang kosong)
+                row = df_keuangan.loc[idx]
+                subset = df_keuangan.copy()
+                for c in categorical_cols:
+                    if c != col and pd.notna(row[c]) and row[c] not in ['Tidak Diketahui', '', 'unknown', 'Unknown']:
+                        subset = subset[subset[c] == row[c]]
+                # Ambil nilai paling sering dari subset mirip
+                val = None
+                if len(subset) > 0 and subset[col].notna().any():
+                    val = subset[col][subset[col].notna() & (subset[col] != 'Tidak Diketahui') & (subset[col] != '') & (subset[col].str.lower() != 'unknown')].mode()
+                    if not val.empty:
+                        df_keuangan.at[idx, col] = val.iloc[0]
+                        continue
+                # Jika tidak ada, pakai modus seluruh kolom
+                mode_val = df_keuangan[col][df_keuangan[col].notna() & (df_keuangan[col] != 'Tidak Diketahui') & (df_keuangan[col] != '') & (df_keuangan[col].str.lower() != 'unknown')].mode()
+                if not mode_val.empty:
+                    df_keuangan.at[idx, col] = mode_val.iloc[0]
+                else:
+                    df_keuangan.at[idx, col] = 'Tidak Diketahui'
 
     # Menambahkan kolom 'Bulan' untuk analisis bulanan
     df_keuangan['Bulan'] = df_keuangan['Tanggal'].dt.to_period('M').astype(str)
@@ -90,6 +111,20 @@ if df_keuangan is not None:
     
     st.title("📊 Dashboard Keuangan dan Operasional Truk Air Isi Ulang 2024")
     st.markdown("Dashboard interaktif untuk analisis data keuangan, pengiriman air, dan kinerja operasional")
+
+    # Indikator kebersihan data
+    def is_data_clean(df, categorical_cols):
+        for col in categorical_cols:
+            if col in df.columns:
+                if df[col].isna().any() or (df[col].astype(str).str.lower().isin(['tidak diketahui', '', 'unknown'])).any():
+                    return False
+        return True
+
+    data_bersih = is_data_clean(df_keuangan, ['Jenis Transaksi', 'Plat Nomor', 'Sopir', 'Order'])
+    if data_bersih:
+        st.success('✅ Data sudah bersih dari missing values dan label unknown.')
+    else:
+        st.warning('⚠️ Data masih mengandung missing values atau label unknown.')
 
     # Sidebar untuk filter
     with st.sidebar:
