@@ -29,6 +29,13 @@ def load_data():
         return None, None
 
     # --- PEMBERSIHAN DATA ---
+    # Menghitung jumlah missing values sebelum pembersihan
+    missing_report = {}
+    for col in ['Pemasukan', 'Pengeluaran', 'Volume (L)', 'Jumlah', 'Jenis Transaksi', 'Plat Nomor', 'Sopir', 'Order']:
+        if col in df_keuangan.columns:
+            missing_report[col] = df_keuangan[col].isna().sum() + (df_keuangan[col].astype(str).str.lower().isin(['tidak diketahui', '', 'unknown'])).sum()
+    total_missing = sum(missing_report.values())
+
     # Mengubah 'Tanggal' menjadi datetime
     df_keuangan['Tanggal'] = pd.to_datetime(df_keuangan['Tanggal'], errors='coerce')
 
@@ -70,9 +77,9 @@ def load_data():
     # Menggabungkan dengan data lokasi
     df_merged = pd.merge(df_keuangan, df_lokasi, left_on='Order', right_on='Nama Lokasi', how='left')
     
-    return df_keuangan, df_merged
+    return df_keuangan, df_merged, missing_report, total_missing
 
-df_keuangan, df_merged = load_data()
+df_keuangan, df_merged, missing_report, total_missing = load_data()
 
 # --- BAGIAN UI DASBOR ---
 if df_keuangan is not None:
@@ -130,18 +137,39 @@ if df_keuangan is not None:
     with st.sidebar:
         st.header("🔧 Filter Data")
         
-        # Filter bulan
-        bulan_options = ['Semua'] + sorted(df_keuangan['Bulan'].unique().tolist())
-        selected_bulan = st.selectbox("Pilih Bulan:", bulan_options)
-        
-        # Filter sopir
-        sopir_options = ['Semua'] + sorted(df_keuangan[df_keuangan['Sopir'] != 'Tidak Diketahui']['Sopir'].unique().tolist())
-        selected_sopir = st.selectbox("Pilih Sopir:", sopir_options)
-        
-        # Filter armada
-        armada_options = ['Semua'] + sorted(df_keuangan[df_keuangan['Plat Nomor'] != 'Tidak Diketahui']['Plat Nomor'].unique().tolist())
-        selected_armada = st.selectbox("Pilih Armada:", armada_options)
-    
+        # Filter bulan (pakai radio jika opsinya sedikit)
+        bulan_options = ['Semua'] + sorted([b for b in df_keuangan['Bulan'].unique().tolist() if pd.notna(b)])
+        if len(bulan_options) <= 7:
+            selected_bulan = st.radio("Pilih Bulan:", bulan_options, horizontal=True)
+        else:
+            selected_bulan = st.select_slider("Pilih Bulan:", options=bulan_options)
+
+        # Filter sopir (pakai radio jika <=7, jika lebih banyak tampilkan top 5 saja)
+        sopir_list = df_keuangan[df_keuangan['Sopir'] != 'Tidak Diketahui']['Sopir'].value_counts().index.tolist()
+        sopir_options = ['Semua'] + sopir_list[:5]
+        selected_sopir = st.radio("Pilih Sopir:", sopir_options, horizontal=True)
+
+        # Filter armada (pakai radio jika <=7, jika lebih banyak tampilkan top 5 saja)
+        armada_list = df_keuangan[df_keuangan['Plat Nomor'] != 'Tidak Diketahui']['Plat Nomor'].value_counts().index.tolist()
+        armada_options = ['Semua'] + armada_list[:5]
+        selected_armada = st.radio("Pilih Armada:", armada_options, horizontal=True)
+
+        # Info missing values (sebelum & sesudah pembersihan) di bawah filter
+        st.markdown('---')
+        st.subheader('ℹ️ Info Missing Values Dataset')
+        with st.expander('Sebelum Pembersihan'):
+            st.write(f"Total missing values (termasuk 'Tidak Diketahui', 'unknown', ''): **{total_missing}**")
+            st.write(missing_report)
+        with st.expander('Setelah Pembersihan'):
+            # Hitung ulang cleaned_missing_report di sini agar tetap up-to-date
+            cleaned_missing_report = {}
+            for col in ['Pemasukan', 'Pengeluaran', 'Volume (L)', 'Jumlah', 'Jenis Transaksi', 'Plat Nomor', 'Sopir', 'Order']:
+                if col in df_keuangan.columns:
+                    cleaned_missing_report[col] = df_keuangan[col].isna().sum() + (df_keuangan[col].astype(str).str.lower().isin(['tidak diketahui', '', 'unknown'])).sum()
+            cleaned_total_missing = sum(cleaned_missing_report.values())
+            st.write(f"Total missing values setelah pembersihan: **{cleaned_total_missing}**")
+            st.write(cleaned_missing_report)
+
     # Apply filters
     df_filtered = df_keuangan.copy()
     df_merged_filtered = df_merged.copy()
@@ -182,31 +210,33 @@ if df_keuangan is not None:
         col3.metric("Laba Bersih", f"Rp {laba_bersih:,.0f}")
         col4.metric("Total Transaksi", f"{total_transaksi:,}")
 
-        # Charts dalam dua kolom untuk menghemat ruang
-        col1, col2 = st.columns(2)
+        # Charts dalam layout yang kompak
+        col1, _ = st.columns([2.5, 1])
         
         with col1:
-            # Trend keuangan bulanan
-            df_bulanan = df_filtered.groupby('Bulan').agg({
+            # Grafik kombinasi: Pemasukan & Pengeluaran (bar), Laba Bersih (garis) - lebih detail dan lebih panjang
+            df_bulanan = df_filtered.groupby(df_filtered['Tanggal'].dt.strftime('%b %Y')).agg({
                 'Pemasukan': 'sum',
                 'Pengeluaran': 'sum'
             }).reset_index()
+            # Urutkan bulan secara kronologis
+            df_bulanan['BulanSort'] = pd.to_datetime(df_bulanan[df_bulanan.columns[0]], format='%b %Y')
+            df_bulanan = df_bulanan.sort_values('BulanSort')
             df_bulanan['Laba Bersih'] = df_bulanan['Pemasukan'] - df_bulanan['Pengeluaran']
-            
-            fig1 = px.line(df_bulanan, x='Bulan', y=['Pemasukan', 'Pengeluaran'], 
-                          title='Trend Pemasukan vs Pengeluaran',
-                          height=350)
-            fig1.update_layout(margin=dict(l=0, r=0, t=30, b=0))
-            st.plotly_chart(fig1, use_container_width=True)
-        
-        with col2:
-            # Pie chart jenis transaksi
-            jenis_transaksi = df_filtered['Jenis Transaksi'].value_counts()
-            fig2 = px.pie(values=jenis_transaksi.values, names=jenis_transaksi.index,
-                         title='Distribusi Jenis Transaksi',
-                         height=350)
-            fig2.update_layout(margin=dict(l=0, r=0, t=30, b=0))
-            st.plotly_chart(fig2, use_container_width=True)
+
+            fig_combo = go.Figure()
+            fig_combo.add_trace(go.Bar(x=df_bulanan[df_bulanan.columns[0]], y=df_bulanan['Pemasukan'], name='Pemasukan', marker_color='#2ca02c'))
+            fig_combo.add_trace(go.Bar(x=df_bulanan[df_bulanan.columns[0]], y=df_bulanan['Pengeluaran'], name='Pengeluaran', marker_color='#d62728'))
+            fig_combo.add_trace(go.Scatter(x=df_bulanan[df_bulanan.columns[0]], y=df_bulanan['Laba Bersih'], name='Laba Bersih', mode='lines+markers', line=dict(color='#1f77b4', width=3)))
+            fig_combo.update_layout(
+                barmode='group',
+                title='Pengeluaran, Pemasukan, dan Laba Bersih per Bulan',
+                height=350,
+                margin=dict(l=0, r=0, t=30, b=0),
+                xaxis_title='Bulan',
+                yaxis_title='Nilai (Rp)'
+            )
+            st.plotly_chart(fig_combo, use_container_width=True)
 
     # --- TAB 2: PENGIRIMAN AIR ---
     with tab2:
@@ -222,28 +252,78 @@ if df_keuangan is not None:
         col2.metric("Rata-rata Volume", f"{avg_volume:,.1f} L")
         col3.metric("Volume Terbesar", f"{max_volume:,.0f} L")
 
-        # Charts dalam layout yang kompak
-        col1, col2 = st.columns(2)
+        # Pilihan tampilan: Analisis atau Peta
+        view_option = st.radio(
+            "Pilih Tampilan:",
+            ["📊 Analisis Pengiriman Air", "🗺️ Peta Pengiriman"],
+            horizontal=True
+        )
+
+        if view_option == "📊 Analisis Pengiriman Air":
+            # Charts dalam layout yang kompak
+            col1, _ = st.columns([3, 1])
+            
+            with col1:
+                # Volume per bulan (Line Chart, Bulan Lebih Detail)
+                volume_per_bulan = df_filtered.groupby(df_filtered['Tanggal'].dt.strftime('%b %Y'))['Volume (L)'].sum().reset_index()
+                # Urutkan bulan secara kronologis
+                volume_per_bulan['BulanSort'] = pd.to_datetime(volume_per_bulan[volume_per_bulan.columns[0]], format='%b %Y')
+                volume_per_bulan = volume_per_bulan.sort_values('BulanSort')
+                fig3 = px.line(volume_per_bulan, x=volume_per_bulan.columns[0], y='Volume (L)',
+                             title='Volume Air per Bulan (Detail)',
+                             markers=True,
+                             height=350)
+                fig3.update_traces(line=dict(color='#1f77b4', width=3))
+                fig3.update_layout(margin=dict(l=0, r=0, t=30, b=0), xaxis_title='Bulan', yaxis_title='Volume (L)')
+                st.plotly_chart(fig3, use_container_width=True)
         
-        with col1:
-            # Volume per bulan
-            volume_per_bulan = df_filtered.groupby('Bulan')['Volume (L)'].sum().reset_index()
-            fig3 = px.bar(volume_per_bulan, x='Bulan', y='Volume (L)',
-                         title='Volume Air per Bulan',
-                         height=300)
-            fig3.update_layout(margin=dict(l=0, r=0, t=30, b=0))
-            st.plotly_chart(fig3, use_container_width=True)
-        
-        with col2:
-            # Top lokasi pengiriman
-            if len(df_filtered) > 0:
-                top_lokasi = df_filtered['Order'].value_counts().head(5).reset_index()
-                top_lokasi.columns = ['Lokasi', 'Jumlah Order']
-                fig4 = px.bar(top_lokasi, x='Jumlah Order', y='Lokasi',
-                             orientation='h', title='Top 5 Lokasi Pengiriman',
-                             height=300)
-                fig4.update_layout(margin=dict(l=0, r=0, t=30, b=0))
-                st.plotly_chart(fig4, use_container_width=True)
+        else:  # Peta Pengiriman
+            # Ambil data pengiriman dengan koordinat valid
+            df_pengiriman = df_merged_filtered[df_merged_filtered['Jenis Transaksi'].str.contains('Air|air|Pengiriman|pengiriman', na=False)].dropna(subset=['Latitude', 'Longitude'])
+            
+            if len(df_pengiriman) == 0:
+                # Jika tidak ada data dengan filter jenis transaksi, gunakan semua data dengan koordinat valid
+                df_pengiriman = df_merged_filtered.dropna(subset=['Latitude', 'Longitude'])
+            
+            if len(df_pengiriman) > 0:
+                col1, col2 = st.columns([1, 2])
+                
+                with col1:
+                    st.subheader("📊 Volume Air Terkirim per Toko")
+                    # Grouping berdasarkan lokasi dan sum volume air
+                    lokasi_volume = df_pengiriman.groupby('Order')['Volume (L)'].sum().sort_values(ascending=False).head(10).reset_index()
+                    lokasi_volume.columns = ['Lokasi', 'Volume Air Terkirim (L)']
+                    
+                    fig_lokasi = px.bar(lokasi_volume, x='Volume Air Terkirim (L)', y='Lokasi',
+                                       orientation='h', 
+                                       title='Top 10 Toko - Volume Air Terkirim',
+                                       height=300)
+                    fig_lokasi.update_layout(margin=dict(l=0, r=0, t=30, b=0))
+                    st.plotly_chart(fig_lokasi, use_container_width=True)
+                    
+                with col2:
+                    st.subheader("🗺️ Peta Pengiriman")
+                    # Peta dengan size dan warna berdasarkan volume air
+                    df_map = df_pengiriman.groupby(['Latitude', 'Longitude', 'Order']).agg({
+                        'Volume (L)': 'sum',
+                        'Pemasukan': 'sum',
+                        'Order': 'count'  # hitung jumlah order per lokasi
+                    }).rename(columns={'Order': 'Jumlah Order'}).reset_index()
+                    
+                    fig_map = px.scatter_mapbox(df_map, 
+                                          lat="Latitude", lon="Longitude",
+                                          size="Volume (L)", 
+                                          color="Volume (L)",
+                                          color_continuous_scale="Reds",
+                                          hover_name="Order",
+                                          hover_data={'Volume (L)': ':,.0f', 'Jumlah Order': True, 'Pemasukan': ':,.0f'},
+                                          mapbox_style="open-street-map",
+                                          height=350,
+                                          zoom=10)
+                    fig_map.update_layout(margin=dict(l=0, r=0, t=0, b=0))
+                    st.plotly_chart(fig_map, use_container_width=True)
+            else:
+                st.warning("Tidak ada data pengiriman air dengan koordinat untuk filter yang dipilih")
 
     # --- TAB 3: DEMOGRAFI & PETA PENGIRIMAN ---
     with tab3:
@@ -270,13 +350,12 @@ if df_keuangan is not None:
                 st.write("**Sample data pengiriman:**")
                 st.dataframe(data_pengiriman_all[['Jenis Transaksi', 'Order', 'Latitude', 'Longitude']].head())
         
-        # Coba dengan filter yang lebih fleksibel
+        # Ambil data pengiriman dengan koordinat valid
         df_pengiriman = df_merged_filtered[df_merged_filtered['Jenis Transaksi'].str.contains('Air|air|Pengiriman|pengiriman', na=False)].dropna(subset=['Latitude', 'Longitude'])
         
         if len(df_pengiriman) == 0:
-            # Jika masih tidak ada, coba tanpa filter jenis transaksi
+            # Jika tidak ada data dengan filter jenis transaksi, gunakan semua data dengan koordinat valid
             df_pengiriman = df_merged_filtered.dropna(subset=['Latitude', 'Longitude'])
-            st.info("⚠️ Tidak ada data dengan jenis transaksi 'Air/Pengiriman', menampilkan semua data dengan koordinat valid")
         
         if len(df_pengiriman) > 0:
             col1, col2 = st.columns([1, 2])
@@ -287,28 +366,32 @@ if df_keuangan is not None:
                 lokasi_counts.columns = ['Lokasi', 'Jumlah Order']
                 
                 fig_lokasi = px.bar(lokasi_counts, x='Jumlah Order', y='Lokasi',
-                                   orientation='h', height=350,
-                                   title='Top 10 Lokasi Pengiriman')
+                                   orientation='h', 
+                                   title='Top 10 Lokasi Pengiriman',
+                                   height=280)
                 fig_lokasi.update_layout(margin=dict(l=0, r=0, t=30, b=0))
                 st.plotly_chart(fig_lokasi, use_container_width=True)
-            
+                
+               
             with col2:
                 st.subheader("🗺️ Peta Pengiriman")
-                # Peta dengan size berdasarkan volume
+                # Peta dengan size dan warna berdasarkan jumlah order
                 df_map = df_pengiriman.groupby(['Latitude', 'Longitude', 'Order']).agg({
                     'Volume (L)': 'sum',
-                    'Pemasukan': 'sum'
-                }).reset_index()
+                    'Pemasukan': 'sum',
+                    'Order': 'count'  # hitung jumlah order per lokasi
+                }).rename(columns={'Order': 'Jumlah Order'}).reset_index()
                 
                 fig_map = px.scatter_mapbox(df_map, 
-                                          lat="Latitude", lon="Longitude",
-                                          size="Volume (L)", 
-                                          color="Pemasukan",
-                                          hover_name="Order",
-                                          hover_data={'Volume (L)': True, 'Pemasukan': True},
-                                          mapbox_style="open-street-map",
-                                          height=350,
-                                          zoom=10)
+                                      lat="Latitude", lon="Longitude",
+                                      size="Jumlah Order", 
+                                      color="Jumlah Order",
+                                      color_continuous_scale="Blues",
+                                      hover_name="Order",
+                                      hover_data={'Volume (L)': ':,.0f', 'Jumlah Order': True, 'Pemasukan': ':,.0f'},
+                                      mapbox_style="open-street-map",
+                                      height=350,
+                                      zoom=10)
                 fig_map.update_layout(margin=dict(l=0, r=0, t=0, b=0))
                 st.plotly_chart(fig_map, use_container_width=True)
         else:
@@ -317,41 +400,78 @@ if df_keuangan is not None:
     # --- TAB 4: ANALISIS ARMADA ---
     with tab4:
         st.header("🚚 Analisis Armada")
-        df_armada = df_filtered[df_filtered['Plat Nomor'] != 'Tidak Diketahui']
+        # Filter armada yang valid (tidak mengandung #### atau tidak diketahui)
+        df_armada = df_filtered[
+            (df_filtered['Plat Nomor'] != 'Tidak Diketahui') & 
+            (~df_filtered['Plat Nomor'].str.contains('####', na=False))
+        ]
         
         if len(df_armada) > 0:
-            # KPI Armada
-            col1, col2, col3 = st.columns(3)
+            # KPI Armada Utama
+            col1, col2, col3, col4 = st.columns(4)
             total_armada = df_armada['Plat Nomor'].nunique()
             armada_terbanyak = df_armada['Plat Nomor'].value_counts().index[0]
             usage_terbanyak = df_armada['Plat Nomor'].value_counts().iloc[0]
+            total_volume_armada = df_armada['Volume (L)'].sum()
             
             col1.metric("Total Armada Aktif", total_armada)
             col2.metric("Armada Terbanyak Digunakan", armada_terbanyak)
-            col3.metric("Jumlah Penggunaan", f"{usage_terbanyak} kali")
+            col3.metric("Jumlah Penggunaan Tertinggi", f"{usage_terbanyak} kali")
+            col4.metric("Total Volume Terangkut", f"{total_volume_armada:,.0f} L")
             
-            col1, col2 = st.columns(2)
-            with col1:
-                # Frekuensi penggunaan armada
-                armada_usage = df_armada['Plat Nomor'].value_counts().head(8).reset_index()
-                armada_usage.columns = ['Armada', 'Jumlah Penggunaan']
-                
-                fig_armada = px.bar(armada_usage, x='Jumlah Penggunaan', y='Armada',
-                                   orientation='h', title='Frekuensi Penggunaan Armada',
-                                   height=350)
-                fig_armada.update_layout(margin=dict(l=0, r=0, t=30, b=0))
-                st.plotly_chart(fig_armada, use_container_width=True)
+            # Sub-tabs untuk analisis armada yang berbeda
+            armada_tab1, armada_tab2 = st.tabs([
+                "📊 Sebaran Penggunaan", 
+                "🚛 Volume & Efisiensi"
+            ])
             
-            with col2:
-                # Total pemasukan per armada
-                pemasukan_armada = df_armada.groupby('Plat Nomor')['Pemasukan'].sum().sort_values(ascending=False).head(8).reset_index()
-                pemasukan_armada.columns = ['Armada', 'Total Pemasukan']
+            # Sub-tab 1: Sebaran Penggunaan Armada
+            with armada_tab1:
+                st.subheader("📈 Sebaran Penggunaan Armada")
                 
-                fig_pemasukan = px.bar(pemasukan_armada, x='Total Pemasukan', y='Armada',
-                                      orientation='h', title='Total Pemasukan per Armada',
-                                      height=350)
-                fig_pemasukan.update_layout(margin=dict(l=0, r=0, t=30, b=0))
-                st.plotly_chart(fig_pemasukan, use_container_width=True)
+                col1, col2 = st.columns(2)
+                with col1:
+                    # Frekuensi penggunaan armada
+                    armada_usage = df_armada['Plat Nomor'].value_counts().head(8).reset_index()
+                    armada_usage.columns = ['Armada', 'Jumlah Penggunaan']
+                    
+                    fig_armada = px.bar(armada_usage, x='Jumlah Penggunaan', y='Armada',
+                                       orientation='h', title='Frekuensi Penggunaan Armada',
+                                       height=300)
+                    fig_armada.update_layout(margin=dict(l=0, r=0, t=30, b=0))
+                    st.plotly_chart(fig_armada, use_container_width=True)
+                
+                with col2:
+                    # Estimasi biaya perawatan per armada
+                    armada_stats = df_armada.groupby('Plat Nomor').agg({
+                        'Pemasukan': 'sum',
+                        'Pengeluaran': 'sum',
+                        'Volume (L)': 'sum'
+                    }).reset_index()
+                    armada_stats['Estimasi Biaya Perawatan'] = armada_stats['Pengeluaran'] * 0.15  # 15% dari pengeluaran
+                    armada_stats = armada_stats.sort_values('Estimasi Biaya Perawatan', ascending=False).head(8)
+                    
+                    fig_perawatan = px.bar(armada_stats, x='Estimasi Biaya Perawatan', y='Plat Nomor',
+                                          orientation='h', title='Estimasi Biaya Perawatan per Armada',
+                                          height=300)
+                    fig_perawatan.update_layout(margin=dict(l=0, r=0, t=30, b=0))
+                    st.plotly_chart(fig_perawatan, use_container_width=True)
+            
+            # Sub-tab 2: Volume & Efisiensi
+            with armada_tab2:
+                st.subheader("🚛 Volume & Efisiensi Pengangkutan")
+                
+                # Hanya menampilkan rata-rata volume per bulan per armada
+                df_armada_bulan = df_armada.groupby(['Plat Nomor', 'Bulan'])['Volume (L)'].sum().reset_index()
+                avg_volume_per_month = df_armada_bulan.groupby('Plat Nomor')['Volume (L)'].mean().sort_values(ascending=False).head(10).reset_index()
+                avg_volume_per_month.columns = ['Armada', 'Rata-rata Volume per Bulan (L)']
+                
+                fig_avg_volume = px.bar(avg_volume_per_month, x='Rata-rata Volume per Bulan (L)', y='Armada',
+                                       orientation='h', title='Rata-rata Volume per Bulan per Armada',
+                                       height=400)
+                fig_avg_volume.update_layout(margin=dict(l=0, r=0, t=30, b=0))
+                st.plotly_chart(fig_avg_volume, use_container_width=True)
+                
         else:
             st.warning("Tidak ada data armada untuk filter yang dipilih")
 
